@@ -8,16 +8,12 @@ services:
     image: redis-sentinel-node:7.4
     container_name: node1
     restart: unless-stopped
-    environment:
-      QUORUM: "2"
-      DOWN_AFTER_MS: "3000"
-      FAILOVER_TIMEOUT: "15000"
-      ROLE: master
-      NODE_NAME: node1
     ports:
       - "6379:6379"
       - "26379:26379"
     volumes:
+      - ./config/redis-master.conf:/etc/redis/redis.conf:ro
+      - ./config/sentinel.conf:/etc/redis/sentinel.conf:ro
       - node1-data:/data
     networks:
       - sentinel-net
@@ -36,16 +32,12 @@ services:
     depends_on:
       node1:
         condition: service_healthy
-    environment:
-      QUORUM: "2"
-      DOWN_AFTER_MS: "3000"
-      FAILOVER_TIMEOUT: "15000"
-      ROLE: slave
-      NODE_NAME: node2
     ports:
       - "6380:6379"
       - "26380:26379"
     volumes:
+      - ./config/redis-replica.conf:/etc/redis/redis.conf:ro
+      - ./config/sentinel.conf:/etc/redis/sentinel.conf:ro
       - node2-data:/data
     networks:
       - sentinel-net
@@ -64,14 +56,10 @@ services:
     depends_on:
       node1:
         condition: service_healthy
-    environment:
-      QUORUM: "2"
-      DOWN_AFTER_MS: "3000"
-      FAILOVER_TIMEOUT: "15000"
-      ROLE: sentinel
     ports:
       - "26381:26379"
     volumes:
+      - ./config/sentinel.conf:/etc/redis/sentinel.conf:ro
       - node3-data:/data
     networks:
       - sentinel-net

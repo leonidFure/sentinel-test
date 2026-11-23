@@ -1,12 +1,6 @@
 #!/bin/sh
-# Redis и Sentinel в одном контейнере. Клиенты в sentinel-net ходят по именам node1/node2/node3.
+# Копирует смонтированные конфиги в /data: Sentinel переписывает свой файл во время работы.
 set -eu
-
-MASTER_NAME="${MASTER_NAME:-mymaster}"
-QUORUM="${QUORUM:-2}"
-DOWN_AFTER_MS="${DOWN_AFTER_MS:-3000}"
-FAILOVER_TIMEOUT="${FAILOVER_TIMEOUT:-15000}"
-ROLE="${ROLE:?ROLE is required (master, slave, or sentinel)}"
 
 if [ "$(id -u)" = "0" ]; then
   chown -R redis:redis /data
@@ -15,21 +9,13 @@ fi
 
 umask 0077
 
-write_sentinel_conf() {
-  cat > /data/sentinel.conf <<EOF
-bind 0.0.0.0
-protected-mode no
-port 26379
-dir /data
-sentinel resolve-hostnames yes
-sentinel announce-hostnames yes
-sentinel monitor ${MASTER_NAME} node1 6379 ${QUORUM}
-sentinel down-after-milliseconds ${MASTER_NAME} ${DOWN_AFTER_MS}
-sentinel failover-timeout ${MASTER_NAME} ${FAILOVER_TIMEOUT}
-sentinel parallel-syncs ${MASTER_NAME} 1
-EOF
-  chmod 600 /data/sentinel.conf
-}
+if [ ! -f /etc/redis/sentinel.conf ]; then
+  echo "missing /etc/redis/sentinel.conf" >&2
+  exit 1
+fi
+
+cp /etc/redis/sentinel.conf /data/sentinel.conf
+chmod 600 /data/sentinel.conf
 
 REDIS_PID=""
 SENTINEL_PID=""
@@ -46,59 +32,35 @@ shutdown() {
 }
 trap shutdown TERM INT
 
-case "$ROLE" in
-  master|slave)
-    NODE_NAME="${NODE_NAME:?NODE_NAME is required}"
-    {
-      echo "bind 0.0.0.0"
-      echo "protected-mode no"
-      echo "port 6379"
-      echo "dir /data"
-      echo "appendonly yes"
-      echo "replica-announce-ip ${NODE_NAME}"
-      echo "replica-announce-port 6379"
-      if [ "$ROLE" != "master" ]; then
-        echo "replicaof node1 6379"
-      fi
-    } > /data/redis.conf
-    chmod 600 /data/redis.conf
-    write_sentinel_conf
+if [ -f /etc/redis/redis.conf ]; then
+  cp /etc/redis/redis.conf /data/redis.conf
+  chmod 600 /data/redis.conf
 
-    redis-server /data/redis.conf &
-    REDIS_PID=$!
+  redis-server /data/redis.conf &
+  REDIS_PID=$!
 
-    ready=0
-    i=0
-    while [ "$i" -lt 50 ]; do
-      if redis-cli -t 2 -p 6379 PING 2>/dev/null | grep -q PONG; then
-        ready=1
-        break
-      fi
-      if ! kill -0 "$REDIS_PID" 2>/dev/null; then
-        echo "redis-server exited during startup" >&2
-        exit 1
-      fi
-      i=$((i + 1))
-      sleep 0.2
-    done
-    if [ "$ready" -ne 1 ]; then
-      echo "redis-server did not become ready" >&2
+  ready=0
+  i=0
+  while [ "$i" -lt 50 ]; do
+    if redis-cli -t 2 -p 6379 PING 2>/dev/null | grep -q PONG; then
+      ready=1
+      break
+    fi
+    if ! kill -0 "$REDIS_PID" 2>/dev/null; then
+      echo "redis-server exited during startup" >&2
       exit 1
     fi
-
-    redis-sentinel /data/sentinel.conf &
-    SENTINEL_PID=$!
-    ;;
-  sentinel)
-    write_sentinel_conf
-    redis-sentinel /data/sentinel.conf &
-    SENTINEL_PID=$!
-    ;;
-  *)
-    echo "invalid ROLE: ${ROLE}" >&2
+    i=$((i + 1))
+    sleep 0.2
+  done
+  if [ "$ready" -ne 1 ]; then
+    echo "redis-server did not become ready" >&2
     exit 1
-    ;;
-esac
+  fi
+fi
+
+redis-sentinel /data/sentinel.conf &
+SENTINEL_PID=$!
 
 while true; do
   if [ -n "$REDIS_PID" ] && ! kill -0 "$REDIS_PID" 2>/dev/null; then
