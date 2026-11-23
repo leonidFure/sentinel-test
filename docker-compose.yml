@@ -1,74 +1,90 @@
-# Кворум Redis Sentinel в одной сети. Клиент (Java) подключается по DNS-именам:
-# node1:26379, node2:26379, node3:26379, мастер mymaster.
-# Проброс портов на хост нужен только для redis-cli с машины, не для Sentinel.
+# Кворум Redis Sentinel в сети sentinel-net.
+# Клиент: node1:26379, node2:26379, node3:26379, мастер mymaster.
+# Порты на хосте — только для redis-cli.
+
+x-node: &node
+  image: redis:7.4-alpine
+  restart: unless-stopped
+  networks: [sentinel-net]
+  entrypoint: ["/bin/sh", "-c"]
+  command:
+    - |
+      set -eu
+      umask 0077
+      cat > /data/sentinel.conf <<'EOF'
+      bind 0.0.0.0
+      protected-mode no
+      port 26379
+      dir /data
+      sentinel resolve-hostnames yes
+      sentinel announce-hostnames yes
+      sentinel monitor mymaster node1 6379 2
+      sentinel down-after-milliseconds mymaster 3000
+      sentinel failover-timeout mymaster 15000
+      sentinel parallel-syncs mymaster 1
+      EOF
+      if [ -z "$${REDIS_ANNOUNCE:-}" ]; then
+        exec redis-sentinel /data/sentinel.conf
+      fi
+      redis-server \
+        --bind 0.0.0.0 \
+        --protected-mode no \
+        --port 6379 \
+        --dir /data \
+        --appendonly yes \
+        --replica-announce-ip "$$REDIS_ANNOUNCE" \
+        --replica-announce-port 6379 \
+        $${REPLICAOF:+--replicaof $$REPLICAOF} &
+      RPID=$$!
+      redis-sentinel /data/sentinel.conf &
+      SPID=$$!
+      trap 'kill $$RPID $$SPID 2>/dev/null || true; exit 0' TERM INT
+      wait -n || exit 1
+      exit 1
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli -t 2 -p 26379 ping && { [ -z \"$$REDIS_ANNOUNCE\" ] || redis-cli -t 2 -p 6379 ping; }"]
+    interval: 3s
+    timeout: 3s
+    retries: 20
+    start_period: 5s
 
 services:
   node1:
-    build: .
-    image: redis-sentinel-node:7.4
+    <<: *node
     container_name: node1
-    restart: unless-stopped
+    environment:
+      REDIS_ANNOUNCE: node1
     ports:
       - "6379:6379"
       - "26379:26379"
     volumes:
-      - ./config/redis-master.conf:/etc/redis/redis.conf:ro
-      - ./config/sentinel.conf:/etc/redis/sentinel.conf:ro
       - node1-data:/data
-    networks:
-      - sentinel-net
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -t 2 -p 6379 ping | grep -q PONG && redis-cli -t 2 -p 26379 ping | grep -q PONG"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
 
   node2:
-    build: .
-    image: redis-sentinel-node:7.4
+    <<: *node
     container_name: node2
-    restart: unless-stopped
     depends_on:
       node1:
         condition: service_healthy
+    environment:
+      REDIS_ANNOUNCE: node2
+      REPLICAOF: node1 6379
     ports:
       - "6380:6379"
       - "26380:26379"
     volumes:
-      - ./config/redis-replica.conf:/etc/redis/redis.conf:ro
-      - ./config/sentinel.conf:/etc/redis/sentinel.conf:ro
       - node2-data:/data
-    networks:
-      - sentinel-net
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -t 2 -p 6379 ping | grep -q PONG && redis-cli -t 2 -p 26379 ping | grep -q PONG"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-      start_period: 5s
 
   node3:
-    build: .
-    image: redis-sentinel-node:7.4
+    <<: *node
     container_name: node3
-    restart: unless-stopped
     depends_on:
       node1:
         condition: service_healthy
     ports:
       - "26381:26379"
     volumes:
-      - ./config/sentinel.conf:/etc/redis/sentinel.conf:ro
       - node3-data:/data
-    networks:
-      - sentinel-net
-    healthcheck:
-      test: ["CMD-SHELL", "redis-cli -t 2 -p 26379 ping | grep -q PONG"]
-      interval: 3s
-      timeout: 3s
-      retries: 20
-      start_period: 3s
 
 networks:
   sentinel-net:
