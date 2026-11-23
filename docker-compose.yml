@@ -1,6 +1,7 @@
 # Кворум Redis Sentinel в сети sentinel-net.
 # Клиент: node1:26379, node2:26379, node3:26379, мастер mymaster.
 # Порты на хосте — только для redis-cli.
+# Конфиги: conf/sentinel.conf, conf/redis-common.conf, conf/node*-redis.conf.
 
 x-node: &node
   image: redis:7.4-alpine
@@ -11,30 +12,12 @@ x-node: &node
     - |
       set -eu
       umask 0077
-      cat > /data/sentinel.conf <<'EOF'
-      bind 0.0.0.0
-      protected-mode no
-      port 26379
-      dir /data
-      sentinel resolve-hostnames yes
-      sentinel announce-hostnames yes
-      sentinel monitor mymaster node1 6379 2
-      sentinel down-after-milliseconds mymaster 3000
-      sentinel failover-timeout mymaster 15000
-      sentinel parallel-syncs mymaster 1
-      EOF
-      if [ -z "$${REDIS_ANNOUNCE:-}" ]; then
+      cp /conf/sentinel.conf /data/sentinel.conf
+      chmod 600 /data/sentinel.conf
+      if [ -z "$${REDIS_CONF:-}" ]; then
         exec redis-sentinel /data/sentinel.conf
       fi
-      redis-server \
-        --bind 0.0.0.0 \
-        --protected-mode no \
-        --port 6379 \
-        --dir /data \
-        --appendonly yes \
-        --replica-announce-ip "$$REDIS_ANNOUNCE" \
-        --replica-announce-port 6379 \
-        $${REPLICAOF:+--replicaof $$REPLICAOF} &
+      redis-server "$$REDIS_CONF" &
       RPID=$$!
       redis-sentinel /data/sentinel.conf &
       SPID=$$!
@@ -42,7 +25,7 @@ x-node: &node
       wait -n || exit 1
       exit 1
   healthcheck:
-    test: ["CMD-SHELL", "redis-cli -t 2 -p 26379 ping && { [ -z \"$$REDIS_ANNOUNCE\" ] || redis-cli -t 2 -p 6379 ping; }"]
+    test: ["CMD-SHELL", "redis-cli -t 2 -p 26379 ping && { [ -z \"$$REDIS_CONF\" ] || redis-cli -t 2 -p 6379 ping; }"]
     interval: 3s
     timeout: 3s
     retries: 20
@@ -53,12 +36,13 @@ services:
     <<: *node
     container_name: node1
     environment:
-      REDIS_ANNOUNCE: node1
+      REDIS_CONF: /conf/node1-redis.conf
     ports:
       - "6379:6379"
       - "26379:26379"
     volumes:
       - node1-data:/data
+      - ./conf:/conf:ro
 
   node2:
     <<: *node
@@ -67,13 +51,13 @@ services:
       node1:
         condition: service_healthy
     environment:
-      REDIS_ANNOUNCE: node2
-      REPLICAOF: node1 6379
+      REDIS_CONF: /conf/node2-redis.conf
     ports:
       - "6380:6379"
       - "26380:26379"
     volumes:
       - node2-data:/data
+      - ./conf:/conf:ro
 
   node3:
     <<: *node
@@ -85,6 +69,7 @@ services:
       - "26381:26379"
     volumes:
       - node3-data:/data
+      - ./conf:/conf:ro
 
 networks:
   sentinel-net:
