@@ -1,0 +1,92 @@
+# Кворум Redis Sentinel в одной сети. Клиент (Java) подключается по DNS-именам:
+# node1:26379, node2:26379, node3:26379, мастер mymaster.
+# Проброс портов на хост нужен только для redis-cli с машины, не для Sentinel.
+
+services:
+  node1:
+    build: .
+    image: redis-sentinel-node:7.4
+    container_name: node1
+    restart: unless-stopped
+    environment:
+      QUORUM: "2"
+      DOWN_AFTER_MS: "3000"
+      FAILOVER_TIMEOUT: "15000"
+      ROLE: master
+      NODE_NAME: node1
+    ports:
+      - "6379:6379"
+      - "26379:26379"
+    volumes:
+      - node1-data:/data
+    networks:
+      - sentinel-net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -t 2 -p 6379 ping | grep -q PONG && redis-cli -t 2 -p 26379 ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  node2:
+    build: .
+    image: redis-sentinel-node:7.4
+    container_name: node2
+    restart: unless-stopped
+    depends_on:
+      node1:
+        condition: service_healthy
+    environment:
+      QUORUM: "2"
+      DOWN_AFTER_MS: "3000"
+      FAILOVER_TIMEOUT: "15000"
+      ROLE: slave
+      NODE_NAME: node2
+    ports:
+      - "6380:6379"
+      - "26380:26379"
+    volumes:
+      - node2-data:/data
+    networks:
+      - sentinel-net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -t 2 -p 6379 ping | grep -q PONG && redis-cli -t 2 -p 26379 ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+
+  node3:
+    build: .
+    image: redis-sentinel-node:7.4
+    container_name: node3
+    restart: unless-stopped
+    depends_on:
+      node1:
+        condition: service_healthy
+    environment:
+      QUORUM: "2"
+      DOWN_AFTER_MS: "3000"
+      FAILOVER_TIMEOUT: "15000"
+      ROLE: sentinel
+    ports:
+      - "26381:26379"
+    volumes:
+      - node3-data:/data
+    networks:
+      - sentinel-net
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -t 2 -p 26379 ping | grep -q PONG"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 3s
+
+networks:
+  sentinel-net:
+    name: sentinel-net
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
